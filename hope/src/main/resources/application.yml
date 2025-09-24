@@ -1,0 +1,16 @@
+server:
+  port: 8080
+
+spring:
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    url: jdbc:mysql://rm-2ze0n767vzd08ehlx6o.mysql.rds.aliyuncs.com:3306/hope?useSSL=false&serverTimezone=Asia/Shanghai
+    username: meteor
+    password: Love1126
+  jpa:
+    hibernate:
+      ddl-auto: update
+
+mybatis-plus:
+  configuration:
+    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
