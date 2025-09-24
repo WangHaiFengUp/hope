@@ -34,7 +34,7 @@ jobs:
       run: mvn clean package -DskipTests
 
     - name: Archive JAR file
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: hope-jar
         path: target/hope-1.0-SNAPSHOT.jar
