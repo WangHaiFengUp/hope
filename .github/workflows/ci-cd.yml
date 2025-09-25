@@ -1,3 +1,98 @@
+# name: CI/CD Pipeline
+
+# on:
+#   push:
+#     branches:
+#       - main
+#   pull_request:
+#     branches:
+#       - main
+
+# jobs:
+#   build:
+#     runs-on: ubuntu-latest
+
+#     steps:
+#     - name: Checkout code
+#       uses: actions/checkout@v3
+
+#     - name: Set up JDK 17
+#       uses: actions/setup-java@v3
+#       with:
+#         java-version: '17'
+#         distribution: 'temurin'
+
+#     - name: Cache Maven packages
+#       uses: actions/cache@v3
+#       with:
+#         path: ~/.m2/repository
+#         key: ${{ runner.os }}-maven-${{ hashFiles('**/pom.xml') }}
+#         restore-keys: |
+#           ${{ runner.os }}-maven-
+
+#     - name: Build with Maven
+#       run: mvn clean package -DskipTests
+
+#     - name: Archive JAR file
+#       uses: actions/upload-artifact@v4
+#       with:
+#         name: hope-jar
+#         path: target/hope-1.0-SNAPSHOT.jar
+
+#   test:
+#     runs-on: ubuntu-latest
+
+#     steps:
+#     - name: Checkout code
+#       uses: actions/checkout@v3
+
+#     - name: Set up JDK 17
+#       uses: actions/setup-java@v3
+#       with:
+#         java-version: '17'
+#         distribution: 'temurin'
+
+#     - name: Run tests
+#       run: mvn test
+
+#   deploy:
+#     runs-on: ubuntu-latest
+#     needs: build
+
+#     steps:
+#     - name: Checkout code
+#       uses: actions/checkout@v3
+
+#     - name: Set up SSH
+#       uses: webfactory/ssh-agent@v0.5.3
+#       with:
+#         ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+
+#     - name: Deploy to server
+#       run: |
+#         ssh -o StrictHostKeyChecking=no root@39.107.155.56 << 'EOF'
+#         mkdir -p /root/hope
+#         cd /root/hope
+#         if [ ! -d .git ]; then
+#           git init
+#           git remote add origin git@github.com:WangHaiFengUp/hope.git
+#           git fetch origin
+#           git checkout main
+#         else
+#           git pull origin main
+#         fi
+#         if ! command -v docker-compose &> /dev/null; then
+#           dnf install -y docker-compose
+#         fi
+#         if ! systemctl is-active --quiet docker; then
+#           systemctl start docker
+#           systemctl enable docker
+#         fi
+#         docker-compose down
+#         docker-compose up -d --build
+#         EOF
+
+
 name: CI/CD Pipeline
 
 on:
@@ -71,23 +166,112 @@ jobs:
     - name: Deploy to server
       run: |
         ssh -o StrictHostKeyChecking=no root@39.107.155.56 << 'EOF'
-        mkdir -p /root/hope
-        cd /root/hope
-        if [ ! -d .git ]; then
-          git init
-          git remote add origin git@github.com:WangHaiFengUp/hope.git
-          git fetch origin
-          git checkout main
-        else
-          git pull origin main
+        set -e
+
+        echo "=== 配置 Docker 国内加速器 ==="
+        mkdir -p /etc/docker
+        cat > /etc/docker/daemon.json <<JSON
+        {
+          "registry-mirrors": [
+            "https://registry.cn-hangzhou.aliyuncs.com",
+            "https://hub-mirror.c.163.com",
+            "https://mirror.ccs.tencentyun.com"
+          ]
+        }
+        JSON
+
+        echo "=== 检查并启动 Docker ==="
+        if ! command -v docker &> /dev/null; then
+          dnf install -y docker
         fi
+        systemctl daemon-reload
+        systemctl restart docker
+        systemctl enable docker
+
+        echo "=== 等待 Docker 启动 ==="
+        sleep 5
+        
+        echo "=== 验证 Docker 状态 ==="
+        systemctl status docker --no-pager
+
+        echo "=== 检查并安装 docker-compose ==="
         if ! command -v docker-compose &> /dev/null; then
           dnf install -y docker-compose
         fi
-        if ! systemctl is-active --quiet docker; then
-          systemctl start docker
-          systemctl enable docker
+
+        echo "=== 预拉取 MySQL 镜像 ==="
+        docker pull mysql:8.0 || echo "MySQL镜像拉取失败，将在构建时重试"
+
+        echo "=== 配置 SSH 密钥 ==="
+        if [ ! -f ~/.ssh/id_rsa ]; then
+          ssh-keygen -t rsa -b 4096 -f ~/.ssh/id_rsa -N ""
+          echo "请将以下公钥添加到GitHub Deploy Keys:"
+          cat ~/.ssh/id_rsa.pub
         fi
-        docker-compose down
-        docker-compose up -d --build
+
+        echo "=== 测试 GitHub SSH 连接 ==="
+        ssh -T git@github.com || echo "SSH连接测试完成"
+
+        echo "=== 获取项目代码 ==="
+        cd /root
+        if [ ! -d hope ]; then
+          echo "克隆新仓库..."
+          git clone git@github.com:WangHaiFengUp/hope.git hope || {
+            echo "SSH克隆失败，尝试HTTPS克隆..."
+            git clone https://github.com/WangHaiFengUp/hope.git hope
+          }
+        else
+          echo "更新现有仓库..."
+          cd hope
+          
+          # 确保远程仓库配置正确
+          if ! git remote get-url origin &>/dev/null; then
+            echo "添加远程仓库..."
+            git remote add origin git@github.com:WangHaiFengUp/hope.git || {
+              echo "SSH远程添加失败，使用HTTPS..."
+              git remote add origin https://github.com/WangHaiFengUp/hope.git
+            }
+          else
+            echo "更新远程仓库URL..."
+            git remote set-url origin git@github.com:WangHaiFengUp/hope.git || {
+              echo "SSH URL设置失败，使用HTTPS..."
+              git remote set-url origin https://github.com/WangHaiFengUp/hope.git
+            }
+          fi
+          
+          # 获取最新代码
+          git fetch --all || echo "fetch失败，继续执行..."
+          git reset --hard origin/main || {
+            echo "reset失败，尝试checkout..."
+            git checkout -B main origin/main || echo "checkout也失败，使用现有代码..."
+          }
+        fi
+
+        cd /root/hope
+
+        echo "=== 停止旧容器 ==="
+        docker-compose down || true
+
+        echo "=== 清理未使用的镜像 ==="
+        docker system prune -f || true
+
+        echo "=== 构建并启动容器 ==="
+        docker-compose up -d --build --remove-orphans --timeout 300
+
+        echo "=== 等待容器启动 ==="
+        sleep 10
+
+        echo "=== 检查容器状态 ==="
+        docker-compose ps
+
+        echo "=== 当前镜像列表 ==="
+        docker images
+
+        echo "=== 当前运行容器 ==="
+        docker ps
+
+        echo "=== 检查应用日志 ==="
+        docker-compose logs --tail=20 app || true
+
+        echo "=== 部署完成 ==="
         EOF
