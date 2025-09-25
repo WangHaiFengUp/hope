@@ -71,8 +71,23 @@ jobs:
     - name: Deploy to server
       run: |
         ssh -o StrictHostKeyChecking=no root@39.107.155.56 << 'EOF'
+        mkdir -p /root/hope
         cd /root/hope
-        git pull origin main
+        if [ ! -d .git ]; then
+          git init
+          git remote add origin git@github.com:WangHaiFengUp/hope.git
+          git fetch origin
+          git checkout main
+        else
+          git pull origin main
+        fi
+        if ! command -v docker-compose &> /dev/null; then
+          dnf install -y docker-compose
+        fi
+        if ! systemctl is-active --quiet docker; then
+          systemctl start docker
+          systemctl enable docker
+        fi
         docker-compose down
         docker-compose up -d --build
         EOF
